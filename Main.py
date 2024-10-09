@@ -1,17 +1,16 @@
 import piexif
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, UnidentifiedImageError
 import pillow_heif
 import requests
-import time
 import os
 import shutil
 import glob
 
 def print_file_info(path):
-    print(f"File path: {path}")
-    print(f"File exists: {os.path.exists(path)}")
-    print(f"Is file: {os.path.isfile(path)}")
-    print(f"File size: {os.path.getsize(path) if os.path.exists(path) else 'N/A'} bytes")
+    file_name = os.path.basename(path)
+    file_size = os.path.getsize(path)
+    print(f"File: {file_name}")
+    print(f"Size: {file_size} bytes")
 
 def extract_gps_info(file_path):
     pillow_heif.register_heif_opener()
@@ -20,22 +19,20 @@ def extract_gps_info(file_path):
     
     try:
         with Image.open(file_path) as img:
-            print(f"Image format: {img.format}")
-            print(f"Image size: {img.size}")
-            print(f"Image mode: {img.mode}")
+            print(f"Format: {img.format}")
+            print(f"Size: {img.size}")
             
             exif_data = img.getexif()
             if exif_data:
-                print("EXIF Data:")
+                relevant_tags = ['Model', 'DateTime']
                 for tag_id, value in exif_data.items():
                     tag = ExifTags.TAGS.get(tag_id, tag_id)
-                    if isinstance(value, bytes):
-                        value = value.decode(errors='replace')
-                    print(f"{tag}: {value}")
-            else:
-                print("No EXIF data found in the image.")
+                    if tag in relevant_tags:
+                        if isinstance(value, bytes):
+                            value = value.decode(errors='replace')
+                        print(f"{tag}: {value}")
             
-            exif_dict = piexif.load(img.info["exif"])
+            exif_dict = piexif.load(img.info.get("exif", b""))
 
             if "GPS" in exif_dict:
                 gps_info = exif_dict["GPS"]
@@ -60,6 +57,8 @@ def extract_gps_info(file_path):
             else:
                 print("No GPS data found in the EXIF information.")
                 return None
+    except UnidentifiedImageError:
+        print(f"Error: Unsupported image format")
     except IOError as e:
         print(f"Error opening the image file: {e}")
     except Exception as e:
@@ -80,7 +79,7 @@ def get_location_from_coordinates(lat, lon):
         "format": "json"
     }
     headers = {
-        "User-Agent": "Image GPS Extractor/1.0"
+        "User-Agent": "Media GPS Extractor/1.0"
     }
     
     response = requests.get(base_url, params=params, headers=headers)
@@ -94,37 +93,57 @@ def get_location_from_coordinates(lat, lon):
         print(f"Error: Unable to fetch location data. Status code: {response.status_code}")
         return 'Unknown'
 
-def move_to_city_folder(file_path, city):
+def move_to_folder(file_path, folder_name):
     base_dir = os.path.dirname(file_path)
-    city_folder = os.path.join(base_dir, city)
+    target_folder = os.path.join(base_dir, folder_name)
     
-    if not os.path.exists(city_folder):
-        os.makedirs(city_folder)
+    if not os.path.exists(target_folder):
+        os.makedirs(target_folder)
     
-    new_file_path = os.path.join(city_folder, os.path.basename(file_path))
+    new_file_path = os.path.join(target_folder, os.path.basename(file_path))
     shutil.move(file_path, new_file_path)
-    print(f"Moved {file_path} to {new_file_path}")
+    print(f"Moved to: {folder_name}")
 
-def process_image(file_path):
+def process_media(file_path):
     coordinates = extract_gps_info(file_path)
 
     if coordinates:
         lat, lon = coordinates
-        print(f"\nCalculated GPS Coordinates: {lat}, {lon}")
-        
-        time.sleep(1)
+        print(f"GPS Coordinates: {lat}, {lon}")
         
         city = get_location_from_coordinates(lat, lon)
         print(f"City: {city}")
         
-        move_to_city_folder(file_path, city)
+        move_to_folder(file_path, city)
     else:
-        print("GPS information not found in the image.")
-        move_to_city_folder(file_path, 'Unknown')
+        print("No location information found.")
+        move_to_folder(file_path, 'Unknown')
+    print()
+
+SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heic']
 
 if __name__ == "__main__":
     folder_path = r"XXXXX"
-    for file_path in glob.glob(os.path.join(folder_path, "*.HEIC")) + \
-                     glob.glob(os.path.join(folder_path, "*.jpg")) + \
-                     glob.glob(os.path.join(folder_path, "*.jpeg")):
-        process_image(file_path)
+    unsupported_formats = set()
+    files_processed = 0
+
+    for file_path in glob.glob(os.path.join(folder_path, "*.*")):
+        files_processed += 1
+        file_extension = os.path.splitext(file_path)[1].lower()
+        if file_extension in SUPPORTED_IMAGE_FORMATS:
+            process_media(file_path)
+        else:
+            print(f"Unsupported file: {os.path.basename(file_path)}")
+            move_to_folder(file_path, 'Not_Supported')
+            unsupported_formats.add(file_extension)
+            print()
+
+    if files_processed == 0:
+        print("No files found to sort.")
+    else:
+        print(f"Total files processed: {files_processed}")
+
+    if unsupported_formats:
+        print("\nUnsupported file formats encountered:")
+        for format in unsupported_formats:
+            print(f"- {format}")
